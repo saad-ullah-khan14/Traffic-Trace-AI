@@ -1,0 +1,22 @@
+# Python 3.12 only. Create the venv with: py -3.12 -m venv .venv
+#
+# Add whatever you actually install, then send this file back with the folder.
+# Muhammad installs from it, so anything missing here breaks integration.
+
+numpy>=2.0
+pillow>=11.0
+
+# --- add your AI libraries below ---
+# e.g.
+# torch
+# ultralytics
+# open_clip_torch
+#
+# NOTE: this machine has no usable GPU (GTX 750Ti, 2 GB, 2016 driver), so the
+# demo runs on CPU. Install the CPU build of torch — it is far smaller and
+# avoids a CUDA download that would not be used anyway:
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#
+# Prefer small models. At demo rate (3 phones, 1 frame every 2 seconds) a
+# ~400 ms/frame model on CPU keeps up comfortably. A large one will not.

@@ -1,0 +1,12 @@
+# AI pipeline dependencies. Versions taken from Teammate 1's working venv.
+# Python 3.12 (his: 3.12.10, ours: 3.12.9).
+#
+# CPU builds on purpose — this laptop's GPU (GTX 750Ti, 2 GB, 2016 driver) is
+# not usable, and the CUDA wheels are several GB for nothing.
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+torch==2.13.0
+torchvision==0.28.0
+ultralytics==8.4.121
+open_clip_torch==3.3.0
+opencv-python==5.0.0.93

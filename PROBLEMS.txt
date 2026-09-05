@@ -1,0 +1,461 @@
+================================================================================
+TRAFFIC_TRACE - EVERY KNOWN PROBLEM, 1 SEPTEMBER 2026
+================================================================================
+
+Written for whoever picks this project up next. Everything here was measured on
+real footage, not guessed. Where a number appears, it came from a run that is
+reproducible with the scripts named beside it.
+
+Read HANDOFF.md first for how the system works and how to run it. This file is
+only the list of what is WRONG, what is already FIXED, and what "done" looks
+like for each item.
+
+Two rules before anything else:
+
+  1. NEVER measure on synthetic input. Identical images posted to two cameras,
+     random vectors, hand-picked stills. Three wrong decisions in one day came
+     from exactly that. Real crops of the same bike from two cameras score
+     0.52-0.55; the same image posted twice scores 0.92. Only the first is real.
+
+  2. A COUNT IS NOT A CHECK. "0 detected" was logged several hundred times and
+     could not distinguish an empty road from a black frame from a sideways
+     frame. Saving one frame and LOOKING at it answered it in a minute.
+
+
+================================================================================
+PART 1 - ALREADY FIXED. DO NOT REDO THESE.
+================================================================================
+
+Each of these cost real debugging time. They are done, tested, and documented in
+HANDOFF.md section 4. Re-opening them wastes days.
+
+ 1. Duplicate candidate cards
+    One vehicle pass produced 2-3 near-identical cards. Fixed by
+    collapse_bursts() in api/app/services/matching.py - same camera, 5 second
+    window, keeps the highest-confidence (clearest) frame.
+    NOTE: embedding similarity CANNOT be used for this. Measured: same-pass
+    cosine 0.850-0.943 vs different-bike 0.691-0.889. They overlap. Time
+    separates them cleanly (1-2 s vs 120-346 s). pipeline/dedupe.py's original
+    0.95 threshold would have collapsed nothing.
+
+ 2. dedupe collapsing an entire frame into one sighting
+    All detections in ONE frame share the same timestamp, so a time-only rule
+    treated three different bikes as one vehicle. Guard added: two detections
+    with time_diff == 0 are never duplicates. Measured: smoke_demo went from 3
+    sightings back to 6.
+
+ 3. dedupe throwing away the violation
+    It kept the highest-CONFIDENCE frame of a burst, which is often NOT the one
+    the helmet model flagged - so the offence was discarded and a clean frame
+    kept. _quality() now ranks a violation above any confidence score.
+
+ 4. Space-time gate was switched off
+    GATE_MAX_REQUIRED_GAP_SECONDS was 2.0 (a bench-testing override) which made
+    the pitch's central claim false. Restored to None. Measured first: the one
+    confirmed cross-camera match was a 30 s hop and the gate demands 23.8 s, so
+    it survives by 6 seconds.
+    CONSEQUENCE - THIS IS A FILMING RULE NOW: leave ~30 s before showing the
+    video to camera 2, and ~2 minutes before camera 3. Faster than that and the
+    true match is rejected before it is ever scored.
+
+ 5. The review screen showed every candidate
+    MIN_CANDIDATE_SCORE = 0.70 was retired. Measured on the officer's own
+    labels: 21 of 21 candidates cleared it, so it excluded nothing, while on
+    earlier runs it silently hid a true match. Replaced by a rank shortlist -
+    the screen asks about the top 5 and offers the rest behind one click.
+    Nothing is deleted. See PART 2 item 2 for why the score cannot be
+    thresholded at all.
+
+ 6. The camera page uploaded black frames
+    A dead stream still reports readyState >= 2 and still draws - it draws
+    black. 147 frames were uploaded as 10,388-byte pure-black JPEGs while the
+    phone looked perfectly healthy. There is now a blank-frame guard (brightest
+    pixel < 8 -> do not send, say so on screen, re-acquire the stream) and a
+    restart on orientationchange / visibilitychange.
+
+ 7. The camera page uploaded sideways frames
+    getUserMedia hands back frames in the SENSOR's orientation. The browser
+    rotates the <video> element for display, so the phone looks correct while
+    the canvas gets the raw sideways frame - and a motorcycle lying on its side
+    is not a motorcycle to a detector trained on upright images.
+    Measured on one real capture: as uploaded 0 motorcycles; rotated 90 degrees
+    counter-clockwise, 2 motorcycles at 122 px and 169 px.
+    Fixed in TWO places, because the client fix alone is not enough:
+      - camera page rotates by -screen.orientation.angle
+      - BUT a phone with auto-rotate LOCKED reports angle 0 while held sideways,
+        so the SERVER also recovers: _detect_upright() in
+        api/app/services/ingest.py retries a rotated copy after a run of empty
+        frames, latches whichever direction works for that camera, and logs a
+        warning. Nothing is latched on success (an earlier version did, and
+        smoke_demo's upright test images then marked real cameras "upright" and
+        disabled the retry forever).
+
+ 8. The system was silent
+    The worker only logged frames that opened an incident, so a run that
+    produced nothing produced no explanation either. Now every frame logs its
+    whole funnel on one line:
+        frame from camera X -> N detected, N kept, N violation(s),
+                               N sighting(s), N incident(s)
+    Plus: logs/api.log (rotating file), every plate decision with its
+    confidence, the pixel heights of detections dropped as too small, and one
+    sample frame per camera per 15 s saved to logs/frames/ whenever nothing was
+    detected. THESE ARE THE MOST USEFUL THINGS IN THE PROJECT. Do not remove
+    them to tidy up.
+
+
+================================================================================
+PART 2 - OPEN PROBLEMS, IN THE ORDER THEY SHOULD BE SOLVED
+================================================================================
+
+--------------------------------------------------------------------------------
+PROBLEM 1 - DETECTION FAILS ON RE-PHOTOGRAPHED SCREENS   [BLOCKS ALL TESTING]
+--------------------------------------------------------------------------------
+Owner: whoever is producing test footage. Not a code bug.
+
+Testing has been done by playing a traffic video on a laptop and pointing phones
+at the screen. Measured on the resulting frames:
+
+    as captured              0 motorcycles
+    rotated 90 clockwise     0
+    rotated 90 counter-cw    0
+    rotated 180              0
+    upscaled 1.5x/2x/3x      0
+
+Bikes are clearly visible to a human in those frames. YOLO finds nothing,
+because re-photographing a screen destroys the detail - moire, glare, low
+contrast. What the camera never captured cannot be recovered by any rotation or
+any zoom.
+
+It works when the bike happens to be close: one frame from the same setup gave a
+motorcycle at 233 px after rotation. So it is not "the code is broken", it is
+"most of the frames have nothing recoverable in them".
+
+DONE LOOKS LIKE: a repeatable source of frames where bikes are 100+ px tall.
+Two ways, either is fine:
+  (a) tools/replay.py - already written for exactly this, and listed as an open
+      item in HANDOFF. It replays a folder of frames straight into the ingest
+      API with real timestamps, simulating all three cameras. Extract frames
+      DIRECTLY FROM THE VIDEO FILE (ffmpeg), never by filming a screen. Layout:
+          tools/recordings/cam-A/manifest.json + frame_*.jpg
+          tools/recordings/cam-B/...
+          tools/recordings/cam-C/...
+      Space the cameras' timestamps by at least 30 s (cam-B) and 2 min (cam-C)
+      or the space-time gate will reject the match - see PART 1 item 4.
+  (b) Film real traffic outdoors with the phones. Real bikes, close, no screen.
+
+Until this exists, every other measurement in this project is starved of data.
+
+--------------------------------------------------------------------------------
+PROBLEM 2 - THE FINGERPRINT CANNOT TELL TWO MOTORCYCLES APART
+--------------------------------------------------------------------------------
+Owner: pipeline/ (fingerprint.py, matcher.py).
+Full brief with a phased plan: teammate_starter/FINGERPRINT_UPGRADE.md
+
+This is the deepest problem in the product and it is NOT a bug. CLIP was trained
+to match an image to a text description. It learned what "a person riding a
+motorcycle" looks like, so two different people on two different motorcycles
+both encode as "person on motorcycle" and land 0.73-0.96 apart from nothing.
+CLIP encodes CATEGORY, not IDENTITY. pipeline/fingerprint.py says so in its own
+docstring.
+
+Measured on 24 labelled cross-camera pairs (the officer's own confirm/reject
+decisions, 1 Sep - the largest labelled set so far):
+
+    rank-1    3/3      the confirmed match ranked FIRST in every incident
+    margin   -0.077    confirmed 0.853-0.951, rejected 0.730-0.930 - overlapping
+
+Both are true at once, and that is the key insight: THE ORDER IS TRUSTWORTHY,
+THE ABSOLUTE NUMBER IS NOT. No threshold separates them; every candidate cleared
+0.70. Reverting the weights does not help either - measured on the same run, the
+old weights hide 5 of 21 and still show 16.
+
+Already tried and REJECTED on measurement (do not repeat without new data):
+    DINOv2 ViT-S/14         margin -0.279, 384-d, 1511 ms/crop
+    OSNet (person re-ID)    margin -0.048, 512-d, 103 ms/crop
+    VehicleDINO (VeRi-776)  margin -0.059, 256-d, 6640 ms/crop
+IMPORTANT: all three were tested on only 2 confirmed pairs. There are now 24.
+Those tests are worth repeating, and person re-ID (OSNet) is still the most
+promising - on commuter motorcycles the RIDER is the distinctive part, and a
+person re-ID model is trained on exactly the question we are asking.
+
+Shipped since: the vehicle embedding now uses the UNION crop (vehicle + rider)
+instead of the tight vehicle box, and the colour histogram's weight was cut from
+0.30 to 0.05 because it measured margin -0.364 - actively misleading on grey
+street scenes. That change improved the fused margin from -0.066 to -0.019. Real
+but not enough.
+
+DONE LOOKS LIKE: margin > 0 AND rank-1 does not drop, measured with
+labelset/benchmark.py (embedding only) and api/scripts/bench_matcher.py (the
+full production path). Both are in the repo and both reproduce today's numbers.
+
+--------------------------------------------------------------------------------
+PROBLEM 3 - A FALSE PLATE READ SILENTLY DISABLES THE WHOLE FEATURE
+--------------------------------------------------------------------------------
+Owner: pipeline/alpr.py
+
+Observed: an incident whose plate is not legible to a human was recorded as
+plate BT351 and marked "Plate read - handled by ANPR". Fingerprint matching was
+never run for it.
+
+The asymmetry is what makes this serious:
+    a MISSED plate  -> the feature takes over. That is the product working.
+    a FALSE plate   -> the incident is handed to ANPR, matching is skipped
+                       entirely, and a registration number that does not exist
+                       is printed on something presented as evidence.
+
+CONFIDENCE_THRESHOLD = 0.5 in pipeline/alpr.py. There is no measurement yet for
+where it belongs, so it has NOT been changed - but every decision is now logged:
+
+    [read_plate] text='BT351' confidence=0.62 threshold=0.5 ACCEPTED
+
+DONE LOOKS LIKE: collect those lines from a run with known plates (some legible,
+some not), find the confidence at which false reads start, set the threshold from
+that. Do not guess it.
+
+--------------------------------------------------------------------------------
+PROBLEM 4 - THE HELMET MODEL MISSES VIOLATIONS
+--------------------------------------------------------------------------------
+Owner: pipeline/helmet.py
+
+Observed 1 Sep: seven sightings were created at one camera with riders visibly
+not wearing helmets, and check_helmet flagged none of them. The funnel line makes
+this visible now:
+
+    frame from camera X -> 1 detected, 1 kept, 0 violation(s), 1 sighting(s), ...
+
+This has never been investigated, because until PROBLEM 1 is solved there are too
+few good frames to judge it on.
+
+DONE LOOKS LIKE: a set of crops with known helmet/no-helmet ground truth, and a
+measured precision/recall for check_helmet on them. Same discipline as the
+fingerprint work: define the bar before changing anything.
+
+--------------------------------------------------------------------------------
+PROBLEM 5 - passenger_count IS WRONG, SO ITS FILTER IS DISABLED
+--------------------------------------------------------------------------------
+Owner: pipeline/detector.py (rider_count) and pipeline/matcher.py
+
+The idea is sound: a one-rider bike and a three-rider bike are not the same
+vehicle, whatever they look like. The input is not trustworthy yet.
+
+Measured across 27 real sightings:
+    passenger_count = 1   24 sightings
+    passenger_count = 0    2 sightings   <- a motorcycle with no rider at all,
+                                            which is a detection failure
+    passenger_count = 3    1 sighting
+A bike carrying a child in front and a pillion passenger behind was recorded
+as 1.
+
+A HARD filter on an ~11% unreliable signal deletes a true match permanently and
+invisibly, and no benchmark catches it: on the 12 labelled cross-camera pairs the
+filter fires ZERO times, because both sides read 1 in every pair.
+
+So it is written, tested, and switched off:
+    PASSENGER_FILTER_ENABLED = False   in pipeline/matcher.py
+
+Also note: _person_on_vehicle's overlap threshold was changed 0.3 -> 0.2 in a
+delivery, unmeasured, and reverted. That threshold decides rider_count, so if
+you change it, measure it against crops with known people counts.
+
+DONE LOOKS LIKE: rider_count measured against real crops, the zeros gone, then
+flip the flag back on.
+
+--------------------------------------------------------------------------------
+PROBLEM 5b - THE WATCHLIST THRESHOLD HAS THE SAME DISEASE AS THE OLD ONE
+--------------------------------------------------------------------------------
+Owner: pipeline/matcher.py
+
+Found 4 Sep by scripts/test_same_camera_fix.py, which fails two checks:
+
+    FAIL  the true cross-camera match now outranks same-camera junk
+          true 0.8066 vs junk 0.8540
+    FAIL  worst realistic same-camera pair falls below the 0.6 threshold
+          floor is now 0.7560 - it was 0.609 before the weight change
+
+Cause: the weight rebalance (colour 0.30 -> 0.05, vehicle 0.20 -> 0.45) lifted
+the WHOLE score scale. WATCHLIST_ALERT_THRESHOLD = 0.6 was calibrated against
+the old scale, so it now alerts on essentially everything - exactly what
+MIN_CANDIDATE_SCORE = 0.70 was doing before it was retired.
+
+The first failure does NOT bite production: the SQL gate never returns
+same-camera rows anyway, and the same test confirms that ("belt and braces").
+The second one does - the watchlist is an alert stream and it is now firing on
+every reappearance.
+
+Do NOT just raise 0.6 to make the test green. That is the mistake this project
+keeps making. The score has no meaningful absolute value; it only ranks. Either
+alert on the top N reappearances per incident, or derive the threshold from
+labelled data the way the candidate list was fixed.
+
+NOTE for whoever runs the tests: this suite CRASHES with exit code -1073741819
+(access violation) if the API is running at the same time - two processes each
+loading the models exhaust the pagefile. Stop the API first, or free disk. See
+PROBLEM 11.
+
+--------------------------------------------------------------------------------
+PROBLEM 11 - THE MACHINE IS OUT OF DISK, AND IT BREAKS THE MODELS
+--------------------------------------------------------------------------------
+C: was down to 0.24 GB. Every script that loads a model died with
+
+    OSError: The paging file is too small for this operation to complete.
+
+and preflight stopped silently halfway through its own checks. Clearing the pip
+and npm download caches recovered 1.53 GB (do NOT touch ~/.cache - it holds the
+CLIP and ALPR weights the offline demo needs). preflight still reports C: as a
+FAILURE.
+
+The real fix is to move the pagefile to D:, which has 191 GB free. Admin
+PowerShell, then reboot:
+
+    $cs = Get-WmiObject Win32_ComputerSystem
+    $cs.AutomaticManagedPagefile = $false; $cs.Put()
+    Set-WmiInstance -Class Win32_PageFileSetting -Arguments @{Name="D:\pagefile.sys"; InitialSize=8192; MaximumSize=16384}
+    Get-WmiObject Win32_PageFileSetting | Where-Object { $_.Name -like "C:*" } | ForEach-Object { $_.Delete() }
+
+--------------------------------------------------------------------------------
+PROBLEM 6 - CAMERA COORDINATES ARE KARACHI PLACEHOLDERS
+--------------------------------------------------------------------------------
+The three cameras sit on invented Karachi coordinates. The map renders them, the
+gate computes real distances from them (0.90 km and 2.44 km), and the journey
+draws lines between them - all on fictional positions.
+
+DONE LOOKS LIKE: real coordinates in api/scripts/seed_cameras.py, then re-run
+    api\.venv\Scripts\python.exe -m scripts.seed_cameras
+and re-run scripts/download_tiles.py WHILE THERE IS INTERNET, because the demo
+runs offline from cached tiles.
+
+WARNING about map tiles: OSM answers HTTP 200 with an "Access blocked" image for
+bulk downloads, and Carto stamps "API KEY REQUIRED" across every tile without a
+key. Both passed every automated check. Tiles now come from
+tile.openstreetmap.de. RENDER THE TILES AND LOOK AT THEM - a count is not a
+check, and neither is a hash.
+
+--------------------------------------------------------------------------------
+PROBLEM 7 - CAMERA POSITIONS DRIFTED FROM THE SEED
+--------------------------------------------------------------------------------
+The phones reported their own GPS and overwrote the seeded positions. They are
+now 0.92 / 2.23 / 2.43 km apart instead of the seeded 1.37 / 1.62 / 2.10.
+This changes every gate calculation.
+
+DONE LOOKS LIKE: re-run scripts.seed_cameras (it also rewrites
+tools/tokens.json), and decide whether phones should be allowed to overwrite
+camera positions at all.
+
+--------------------------------------------------------------------------------
+PROBLEM 8 - ONE PHONE'S CHROME FLAG NEVER WORKED
+--------------------------------------------------------------------------------
+navigator.mediaDevices is undefined on one handset. The flag
+    chrome://flags -> unsafely-treat-insecure-origin-as-secure
+must contain the EXACT origin, e.g. http://10.133.200.6:3000 - no trailing
+slash, correct port, and the IP changes when the network changes. Relaunch after
+setting it; on ColorOS a Relaunch is not enough, force-stop Chrome.
+
+Compare the failing phone's flag entry character by character against a working
+one. If the phone cannot reach http://<ip>:3000 at all, it is Windows Firewall,
+not the app:
+    netsh advfirewall firewall add rule name="Traffic_Trace" dir=in
+        action=allow protocol=TCP localport=3000,8000
+
+--------------------------------------------------------------------------------
+PROBLEM 9 - THE INCIDENT KEEPS THE FIRST FRAME, NOT THE CLEAREST
+--------------------------------------------------------------------------------
+Candidates already pick the clearest frame of a pass (collapse_bursts). Ingest
+still does not: measured, camera 1 kept a crop at confidence 0.48 when 0.58 was
+available in the same burst. The violation photo the officer sees is therefore
+often not the best one available.
+
+DONE LOOKS LIKE: the same 5-second grouping applied at ingest when choosing which
+frame becomes the incident's evidence crop.
+
+--------------------------------------------------------------------------------
+PROBLEM 10 - NO REHEARSAL HAS EVER HAPPENED (Phase 19)
+--------------------------------------------------------------------------------
+The only phase never done. Every part of the chain has now worked at least once,
+but never all three cameras in one run, and never end to end without someone
+stopping to debug.
+
+Specifically untested: a three-stop journey. Camera 3 has never produced a single
+sighting in any run.
+
+
+================================================================================
+PART 3 - MEASUREMENTS THAT MUST NOT BE RE-DERIVED
+================================================================================
+
+These were expensive. Do not "improve" the things they explain without new
+measurements of your own. Full detail is in HANDOFF.md section 4.
+
+  QUEUE_MAXSIZE = 8, not 64. Queue depth is a latency budget, not a buffer. At
+  64 a violation frame was evicted before it was processed and the incident
+  never appeared at all. 64 -> visible after 19.3 s or never; 8 -> 5.1 s.
+
+  Space-time is a GATE, not an identity signal. On real footage it was INVERTED
+  - it rewarded vehicles that dawdled. build_scoring_payload deliberately does
+  not send distance_m / time_gap_seconds, and score_candidates redistributes the
+  missing weight. WEIGHT_SPACE_TIME is therefore dead weight in practice.
+
+  Same-camera pairs used to score a free 1.0 and outrank the true cross-camera
+  match. Fixed in two layers on purpose.
+
+  MIN_VEHICLE_HEIGHT_PX = 96. Below this a crop is upscaled mush. Measured: too
+  far 60-71 px, usable 145-214 px.
+
+  Automatic grouping from a score was tried and abandoned TWICE - once at 0.6
+  (it swallowed six genuinely different riders) and once at 0.85, justified by a
+  measurement taken by posting the IDENTICAL IMAGE at both cameras. Merging is
+  driven only by the officer's confirm. There is no threshold. Only the officer
+  knows.
+
+
+================================================================================
+PART 4 - HOW TO VERIFY ANYTHING YOU CHANGE
+================================================================================
+
+From api/ :
+    .venv\Scripts\python.exe -m scripts.preflight          is this machine ready
+    .venv\Scripts\python.exe -m scripts.smoke_demo         52 checks, whole flow
+    .venv\Scripts\python.exe -m scripts.test_case_grouping 6 scenarios, case rules
+    .venv\Scripts\python.exe -m scripts.test_same_camera_fix
+    .venv\Scripts\python.exe -m scripts.test_burst_dedupe
+    .venv\Scripts\python.exe -m scripts.bench_matcher      fused score, real path
+    .venv\Scripts\python.exe -m scripts.export_labelset    rebuild the label set
+From the repo root:
+    api\.venv\Scripts\python.exe -m pipeline.selftest      13 contract checks
+
+smoke_demo and test_case_grouping are DESTRUCTIVE - they reset the demo data
+twice and leave it clean. Run them before the phones are set up, never during,
+and ALWAYS run export_labelset first if there are unsaved officer labels. One
+set of labels has already been lost to a Reset demo.
+
+Current state of all of them, 1 Sep: everything passes.
+    preflight 36/0    smoke_demo 52/0    selftest 13/0
+
+pipeline/selftest.py checks CONTRACTS, not behaviour. It passed while cars were
+re-enabled and while rider_bboxes had been dropped from the payload. Passing it
+is necessary, never sufficient.
+
+
+================================================================================
+PART 5 - ARCHITECTURE RULES THAT MUST NOT BE BROKEN
+================================================================================
+
+  api/ imports pipeline/. pipeline/ must NEVER import from api/.
+  api/app/services/pipeline_client.py is the ONLY file that crosses over.
+  A route containing SQL is a bug. A service importing fastapi is a bug.
+  Embeddings are float4[] + numpy cosine, NOT pgvector. SQL gates by space-time,
+  numpy ranks by cosine. If a new model's dimension is not 512 that is a schema
+  migration (contracts/schema.sql has a CHECK constraint) - flag it before
+  writing code, and every embedding already stored becomes incomparable.
+  Evidence crops include the rider on purpose - measured 1.49-1.81x taller -
+  because the rider is what an officer recognises. Do not drop rider_bboxes
+  from the process_frame payload; api/app/services/ingest.py needs it.
+  Only motorcycles are detected. VEHICLE_CLASSES = {"motorcycle"} is a measured
+  product decision: no car, bus or truck can commit no_helmet, and including
+  them cost 71% of frame time and 16 of 20 candidate slots. It has been reverted
+  by accident once already.
+  Docker / WSL2 / Hyper-V are permanently impossible on this laptop.
+  Python 3.12 exactly.
+
+================================================================================
+END
+================================================================================

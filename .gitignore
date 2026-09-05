@@ -1,0 +1,14 @@
+# Sirf yeh 3 cheezein bahar hain: GitHub 100MB/file par reject karta hai aur
+# yeh dono folders machine-specific hain (teammate `pip install -r requirements.txt`
+# aur `npm install` se dobara bana lega). Baaki poora project committed hai.
+api/.venv/
+dashboard/node_modules/
+dashboard/.next/
+
+# git internals of the old frontend repo (renamed so git tracks dashboard/ as
+# normal files) + compiled python bytecode — neither is source code.
+dashboard/.git_frontend_repo_DISABLED/
+__pycache__/
+
+# mere purane gitignore ke backups, source nahi
+*.gitignore.backup

@@ -1,0 +1,18 @@
+# Traffic_Trace API dependencies
+# Python 3.12 ONLY - create the venv with: py -3.12 -m venv .venv
+# (3.14 is the default on PATH and has no wheels for these; 3.11 is not installed)
+#
+# Versions below are the exact set verified installing as native cp312
+# wheels on 17 Aug 2026 - no compiler required.
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+psycopg[binary,pool]==3.3.4
+numpy==2.5.2
+pillow==12.3.0
+python-multipart==0.0.32
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+
+# NOTE: no pgvector. Embeddings are stored as float4[] and ranked by
+# cosine in numpy inside the worker. See PROGRESS.md section 4.3.
