@@ -12,3 +12,4 @@ __pycache__/
 
 # mere purane gitignore ke backups, source nahi
 *.gitignore.backup
+api/.env
