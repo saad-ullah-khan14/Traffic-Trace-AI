@@ -132,3 +132,16 @@ def get_confirmed_sightings(
             (incident_id,),
         )
         return cur.fetchall()
+
+
+def get_confirmed_sighting_ids(conn) -> set[str]:
+    """
+    Every sighting_id that has already been confirmed as the same vehicle
+    for SOME incident. Used to keep a confirmed sighting from being
+    re-offered as a candidate on an unrelated incident.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT sighting_id FROM matches WHERE decision = 'confirm'"
+        )
+        return {str(row["sighting_id"]) for row in cur.fetchall()}

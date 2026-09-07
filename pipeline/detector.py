@@ -60,6 +60,24 @@ def _boxes_overlap_or_above(person_box, vehicle_box):
         return True
 
     return False
+def _extend_bbox_upward(bbox, frame_height, extension_fraction=0.8):
+    """
+    Extends a person box upward by a fraction of its own height, so a rider's
+    head is included even when YOLO's raw person box is tight around the
+    torso and cuts it off.
+
+    Measured on real street footage: a rider's saved evidence crop showed
+    almost no head at all — just torso and shoulders — because the person
+    detector's box for that frame started too low. This is common with
+    partial occlusion, motion blur, or a rider leaning forward. The helmet
+    model then has nothing to judge, which is worse than a slightly looser
+    crop with extra background above the head.
+    """
+    x1, y1, x2, y2 = bbox
+    box_height = y2 - y1
+    extension = box_height * extension_fraction
+    new_y1 = max(0, y1 - extension)
+    return [x1, new_y1, x2, y2]
 
 
 def detect(img):
@@ -94,7 +112,12 @@ def detect(img):
     detections = []
     for vehicle in vehicles:
         if vehicle["vehicle_type"] == "motorcycle":
-            rider_bboxes = [p for p in persons if _boxes_overlap_or_above(p, vehicle["bbox"])]
+            frame_height = img.shape[0]
+            rider_bboxes = [
+                _extend_bbox_upward(p, frame_height)
+                for p in persons
+                if _boxes_overlap_or_above(p, vehicle["bbox"])
+            ]
         else:
             rider_bboxes = []
         detections.append({**vehicle, "rider_bboxes": rider_bboxes, "rider_count": len(rider_bboxes)})

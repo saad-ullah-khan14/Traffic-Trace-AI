@@ -125,6 +125,13 @@ def find_candidates(
         min_gap_seconds=min_gaps,
         window_seconds=window_seconds or MATCH_WINDOW_SECONDS,
     )
+    # A sighting already confirmed as belonging to a DIFFERENT incident should
+    # not be re-offered here — an officer who has already said "yes, this is
+    # the same vehicle as case A" should never see that same sighting show up
+    # as a candidate for unrelated case B.
+    from app.db.queries import matches as matches_q
+    already_confirmed_elsewhere = matches_q.get_confirmed_sighting_ids(conn)
+    gated = [g for g in gated if str(g["id"]) not in already_confirmed_elsewhere]
 
     # Before ranking, not after: duplicates of one pass were eating the top-K
     # slots that distinct vehicles should have had.
@@ -343,3 +350,5 @@ def refresh_candidates(conn, incident) -> None:
         return
 
     run_matching(conn, incident["id"], origin, cameras_q.list_cameras(conn))
+
+

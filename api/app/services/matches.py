@@ -53,3 +53,16 @@ def absorb_duplicate_case(conn, incident_id: UUID, sighting_id: UUID) -> Optiona
         incident_id,
     )
     return {"merged_id": str(duplicate["id"]), "into_id": str(incident_id)}
+
+
+def get_confirmed_sighting_ids(conn) -> set[str]:
+    """
+    Every sighting_id that has already been confirmed as the same vehicle
+    for SOME incident. Used to keep a confirmed sighting from being
+    re-offered as a candidate on an unrelated incident.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT sighting_id FROM matches WHERE decision = 'confirm'"
+        )
+        return {str(row["sighting_id"]) for row in cur.fetchall()}

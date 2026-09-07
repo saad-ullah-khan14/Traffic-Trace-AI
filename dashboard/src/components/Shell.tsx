@@ -19,6 +19,7 @@ import { subscribeLive } from "@/lib/ws";
 const NAV = [
   { href: "/", label: "Live feed" },
   { href: "/incidents", label: "Incidents" },
+  { href: "/find", label: "Find Me" },
   { href: "/map", label: "Live map" },
   { href: "/journeys", label: "Journeys" },
   { href: "/camera", label: "Camera" },

@@ -48,7 +48,7 @@ DEDUPE_LOOKBACK_SECONDS = 5.0
 # same camera inside this window become one incident. Narrow it, or find a signal
 # that actually discriminates, if under-counting ever matters more than a queue
 # full of duplicates.
-INCIDENT_MERGE_WINDOW_SECONDS = 30.0
+INCIDENT_MERGE_WINDOW_SECONDS = 10.0
 
 # Smallest vehicle worth recording, as the height of its box in pixels.
 #

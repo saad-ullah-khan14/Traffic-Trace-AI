@@ -91,7 +91,7 @@ def _space_time_score(distance_m, time_gap_seconds):
 # Turn this on the day rider_count is measured against the crops and the 0s are
 # gone. The idea is right — a one-rider bike and a three-rider bike are not the
 # same vehicle — the input is not ready.
-PASSENGER_FILTER_ENABLED = False
+PASSENGER_FILTER_ENABLED = True
 
 
 def _passenger_count_plausible(incident_count, candidate_count):
